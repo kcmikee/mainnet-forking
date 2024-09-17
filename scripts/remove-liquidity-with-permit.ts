@@ -1,0 +1,133 @@
+import { ethers } from "hardhat";
+const helpers = require("@nomicfoundation/hardhat-network-helpers");
+
+async function main() {
+  const ROUTER_ADDRESS = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
+  const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+  const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
+  const LP_TOKEN = "0xYourLPTokenAddress"; // Replace with actual LP token address
+
+  const TOKEN_HOLDER = "0xf584F8728B874a6a5c7A8d4d387C9aae9172D621"; // Account holding liquidity tokens
+
+  await helpers.impersonateAccount(TOKEN_HOLDER);
+  const impersonatedSigner = await ethers.getSigner(TOKEN_HOLDER);
+
+  const liquidity = ethers.parseUnits("1", 18); // Amount of liquidity tokens to remove
+  const amountAMin = ethers.parseUnits("1", 6); // Minimum amount of USDC to receive
+  const amountBMin = ethers.parseUnits("1", 18); // Minimum amount of DAI to receive
+
+  const deadline = Math.floor(Date.now() / 1000) + 60 * 10; // 10 minutes from now
+
+  const USDC_Contract = await ethers.getContractAt(
+    "IERC20",
+    USDC,
+    impersonatedSigner
+  );
+  const DAI_Contract = await ethers.getContractAt(
+    "IERC20",
+    DAI,
+    impersonatedSigner
+  );
+  const LP_Contract = await ethers.getContractAt(
+    "IERC20",
+    LP_TOKEN,
+    impersonatedSigner
+  );
+
+  const ROUTER = await ethers.getContractAt(
+    "IUniswapV2Router",
+    ROUTER_ADDRESS,
+    impersonatedSigner
+  );
+
+  // Construct permit parameters
+  //   @ts-ignore //error
+  const nonce = await LP_Contract.nonces(impersonatedSigner.address);
+  const permitDeadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20 minutes from now
+
+  // Generate permit signature
+  const domain = {
+    name: "Uniswap V2",
+    version: "1",
+    chainId: await ethers.provider.getNetwork().then((n) => n.chainId),
+    verifyingContract: LP_TOKEN,
+  };
+
+  const types = {
+    Permit: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+  };
+
+  const value = {
+    owner: impersonatedSigner.address,
+    spender: ROUTER_ADDRESS,
+    value: liquidity,
+    nonce: nonce,
+    deadline: permitDeadline,
+  };
+
+  const signature = await impersonatedSigner._signTypedData(
+    domain,
+    types,
+    value
+  );
+  const { v, r, s } = ethers.splitSignature(signature);
+
+  // Get balances before removing liquidity
+  const usdcBalBefore = await USDC_Contract.balanceOf(
+    impersonatedSigner.address
+  );
+  const daiBalBefore = await DAI_Contract.balanceOf(impersonatedSigner.address);
+  console.log(
+    "USDC balance before removing liquidity:",
+    ethers.formatUnits(usdcBalBefore, 6)
+  );
+  console.log(
+    "DAI balance before removing liquidity:",
+    ethers.formatUnits(daiBalBefore, 18)
+  );
+
+  // Remove liquidity using the permit
+  const tx = await ROUTER_ADDRESS.removeLiquidityWithPermit(
+    USDC,
+    DAI,
+    liquidity,
+    amountAMin,
+    amountBMin,
+    impersonatedSigner.address,
+    deadline,
+    true, // approveMax - approve the max amount (set to false if not required)
+    v,
+    r,
+    s
+  );
+
+  await tx.wait(); // Wait for the transaction to be mined
+
+  const usdcBalAfter = await USDC_Contract.balanceOf(
+    impersonatedSigner.address
+  );
+  const daiBalAfter = await DAI_Contract.balanceOf(impersonatedSigner.address);
+
+  console.log("=========================================================");
+  console.log(
+    "USDC balance after removing liquidity:",
+    ethers.formatUnits(usdcBalAfter, 6)
+  );
+  console.log(
+    "DAI balance after removing liquidity:",
+    ethers.formatUnits(daiBalAfter, 18)
+  );
+}
+
+// We recommend this pattern to be able to use async/await everywhere
+// and properly handle errors.
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
